@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "predeploy": ["yarn lint", "yarn build"],
+    "source": ".",
+    "runtime": "nodejs12"
+  }
+}

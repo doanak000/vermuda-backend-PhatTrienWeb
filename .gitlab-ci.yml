@@ -1,0 +1,87 @@
+image: node:12.13.0-alpine
+
+stages:
+  - check
+  - deploy
+
+cache:
+  key: ${CI_COMMIT_REF_SLUG}
+  paths:
+    - node_modules
+
+.ssh_helper: &ssh_helper |
+  function ssh_init() {
+      SSH_PRIVATE_KEY="$1"
+      SSH_KNOWN_HOSTS="$2"
+      which ssh-agent || ( apt-get update -y && apt-get install openssh-client -y )
+      eval $(ssh-agent -s)
+      echo "$SSH_PRIVATE_KEY" | tr -d '\r' | ssh-add - > /dev/null
+      mkdir -p ~/.ssh
+      chmod 700 ~/.ssh
+      ssh-keyscan -H "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+      chmod 644 ~/.ssh/known_hosts
+  }
+
+  function ssh_run() {
+      USER=$1
+      HOST=$2
+      PKEY=$3
+      GIT_BRANCH=$4
+      PROJECT_PATH=$5
+      ssh_init "$PKEY" $HOST
+      ssh $USER@$HOST "
+        cd $PROJECT_PATH
+        git checkout -- .
+        git pull
+        git checkout $GIT_BRANCH
+        yarn
+        yarn lint
+        yarn build
+        cp .env.prod dist/.env
+        yarn migration
+        pm2 restart 0
+      "
+  }
+
+.deploy: &deploy
+  stage: deploy
+  before_script:
+    - *ssh_helper
+  script:
+    - ssh_run "ubuntu" "$HOST" "$SSH_KEY" $CI_COMMIT_REF_NAME $PROJECT_PATH
+
+.production: &production
+  environment: production
+  variables:
+    HOST: $HOST_PROD
+    SSH_KEY: $SSH_PRIVATE_KEY_PROD
+  only:
+    - /^v*/
+  except:
+    - branches
+  when: manual
+
+check:
+  stage: check
+  script:
+    - yarn
+    - yarn lint
+    - yarn build
+  only:
+    - /^feature\/.*/
+
+staging:
+  stage: deploy
+  before_script:
+    - yarn global add firebase-tools
+  script:
+    - yarn
+    - firebase deploy --only functions --token $FIREBASE_TOKEN
+  only:
+    - develop
+    - /^release\/.*/
+    - /^hotfix\/.*/
+
+production:
+  <<: *production
+  <<: *deploy
